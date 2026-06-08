@@ -70,7 +70,7 @@
   [A11Y]     openMoreSheet   : focus trap + restauration focus actifs
 -->
 <!-- CSP corrigée -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; script-src-elem 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com; style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src https://api-adresse.data.gouv.fr https://nominatim.openstreetmap.org https://*.tile.openstreetmap.org; img-src 'self' data: https://*.tile.openstreetmap.org blob:; worker-src 'self' blob:; manifest-src 'self' data:"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; script-src-elem 'self' 'unsafe-inline' https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com; style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net https://unpkg.com; font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; connect-src https://api-adresse.data.gouv.fr https://nominatim.openstreetmap.org https://*.tile.openstreetmap.org https://api.github.com https://gist.githubusercontent.com; img-src 'self' data: https://*.tile.openstreetmap.org blob:; worker-src 'self' blob:; manifest-src 'self' data:"/>
 <!-- PWA Manifest inline -->
 <link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22DoorKeys%22%2C%22short_name%22%3A%22DoorKeys%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%23080a0e%22%2C%22theme_color%22%3A%22%23080a0e%22%2C%22icons%22%3A%5B%7B%22src%22%3A%22data%3Aimage%2Fsvg%2Bxml%2C%253Csvg%2520xmlns%3D%2527http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%2527%2520viewBox%3D%25270%25200%252096%252096%2527%253E%253Crect%2520width%3D%252796%2527%2520height%3D%252796%2527%2520rx%3D%252720%2527%2520fill%3D%2527%2523111520%2527%2F%253E%253Ctext%2520x%3D%252748%2527%2520y%3D%252765%2527%2520text-anchor%3D%2527middle%2527%2520font-size%3D%252750%2527%253E%25E2%258C%2582%253C%2Ftext%253E%253C%2Fsvg%253E%22%2C%22sizes%22%3A%22any%22%2C%22type%22%3A%22image%2Fsvg%2Bxml%22%7D%5D%7D"/>
 <title>DoorKeys</title>
@@ -1799,6 +1799,7 @@ input:checked + .slider::after { transform: translateX(18px); background: var(--
   <div class="qr-box">
     <div class="qr-title" id="qrTitle">QR Code</div>
     <div class="qr-sub" id="qrSub"></div>
+    <div id="qrLinkInfo" style="font-size:11px;color:var(--text3);margin-bottom:8px;text-align:center"></div>
     <div class="qr-canvas-wrap"><canvas id="qrCanvas" width="200" height="200" aria-label="QR code"></canvas></div>
     <div class="btn-row">
       <button class="btn" id="qrCopyBtn"><i class="ti ti-copy" aria-hidden="true"></i> Copier le lien</button>
@@ -2471,7 +2472,12 @@ function openQrModal(link, name) {
   const canvas = $('#qrCanvas');
   const sub = $('#qrSub');
   if (!modal || !canvas || !sub) return;
-  sub.textContent = name || `Scanne pour importer l'adresse`;
+  sub.textContent = name ? `${name} — Scanne pour importer` : `Scanne pour importer l'adresse`;
+  // Affiche aussi l'info sur le type de lien
+  const linkInfo = $('#qrLinkInfo');
+  if (linkInfo) {
+    linkInfo.textContent = link.includes('?g=') ? '🔒 Lien court via Gist anonyme · Clé dans l\'URL' : '🔒 Lien chiffré';
+  }
   const dpr = window.devicePixelRatio || 1;
   const size = 280;
   canvas.style.width = size + 'px';
@@ -4126,29 +4132,76 @@ async function decompressBytes(bytes) {
   chunks.forEach(c => { out.set(c, off); off += c.length; });
   return out;
 }
+// ── GIST : crée un Gist anonyme avec le payload chiffré et retourne l'ID ──
+async function createGist(encryptedPayload) {
+  const res = await fetch('https://api.github.com/gists', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/vnd.github+json' },
+    body: JSON.stringify({
+      description: 'DoorKeys share',
+      public: true,
+      files: { 'doorkeys.txt': { content: encryptedPayload } },
+    }),
+  });
+  if (!res.ok) throw new Error('Gist creation failed: ' + res.status);
+  const data = await res.json();
+  return data.id; // ~20 chars
+}
+
+// ── GIST : lit le payload chiffré depuis un Gist ──
+async function readGist(gistId) {
+  const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+    headers: { 'Accept': 'application/vnd.github+json' },
+  });
+  if (!res.ok) throw new Error('Gist not found');
+  const data = await res.json();
+  const file = data.files?.['doorkeys.txt'];
+  if (!file) throw new Error('No doorkeys.txt in gist');
+  return file.content;
+}
+
 async function buildEncryptedInviteLink(a) {
   const payload = buildCompactPayload(a);
-  // AES-128 : cle 16 octets (securite excellente, -21 chars vs AES-256)
+  // AES-128 : clé 16 octets
   const shareKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, true, ['encrypt', 'decrypt']);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const raw = new TextEncoder().encode(JSON.stringify(payload));
   const compressed = await compressBytes(raw);
-  // Prefixe 1 octet : 0x02 = AES-128 compresse (nouveau), 0x01 = AES-256 compresse, 0x00 = non compresse
   const dataToEncrypt = compressed.length < raw.length
     ? (() => { const b = new Uint8Array(1 + compressed.length); b[0] = 0x02; b.set(compressed, 1); return b; })()
     : (() => { const b = new Uint8Array(1 + raw.length); b[0] = 0x00; b.set(raw, 1); return b; })();
   const cipher = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, shareKey, dataToEncrypt);
   const rawKey = await crypto.subtle.exportKey('raw', shareKey);
-  const keyBytes = new Uint8Array(rawKey); // 16 octets AES-128
+  const keyBytes = new Uint8Array(rawKey);
   const cipherBytes = new Uint8Array(cipher);
-  // ?s= : KEY(16) + IV(12) + cipher encodé en BASE36 (0-9 A-Z) → mode alphanumérique QR
-  const combined = new Uint8Array(16 + 12 + cipherBytes.length);
-  combined.set(keyBytes, 0); combined.set(iv, 16); combined.set(cipherBytes, 28);
-  const s = b36FromBytes(combined);
-  // Stockage interne en base62 (compact pour localStorage)
+
+  // Stockage interne en base62
   const tokenBytes = new Uint8Array(12 + cipherBytes.length);
   tokenBytes.set(iv, 0); tokenBytes.set(cipherBytes, 12);
-  return { token: b62FromBytes(tokenBytes), keyHex: b62FromBytes(keyBytes), link: `${baseUrl()}?s=${s}` };
+  const token = b62FromBytes(tokenBytes);
+  const keyB62 = b62FromBytes(keyBytes);
+
+  // Payload pour le Gist : IV + ciphertext en base36 (sans la clé — qui reste dans l'URL fragment)
+  const ivCipherCombined = new Uint8Array(12 + cipherBytes.length);
+  ivCipherCombined.set(iv, 0); ivCipherCombined.set(cipherBytes, 12);
+  const gistPayload = b36FromBytes(ivCipherCombined);
+
+  // Clé AES en base36 pour le fragment (URL-safe, court)
+  const keyB36 = b36FromBytes(keyBytes);
+
+  let link;
+  try {
+    const gistId = await createGist(gistPayload);
+    // URL courte : domaine + ?g=GIST_ID#k=CLE_BASE36
+    link = `${baseUrl()}?g=${gistId}#k=${keyB36}`;
+  } catch(e) {
+    // Fallback : ancien format inline si Gist échoue
+    console.warn('Gist fallback:', e.message);
+    const combined = new Uint8Array(16 + 12 + cipherBytes.length);
+    combined.set(keyBytes, 0); combined.set(iv, 16); combined.set(cipherBytes, 28);
+    link = `${baseUrl()}?s=${b36FromBytes(combined)}`;
+  }
+  return { token, keyHex: keyB62, link };
 }
 async function decryptInviteToken(token, keyB64) {
   try {
@@ -4224,7 +4277,13 @@ async function createAndCopyInvite() {
 }
 function inviteFromUrl() {
   const params = new URLSearchParams(location.search);
-  // Nouveau format : ?s= contient KEY(16) + IV(12) + cipher en base36 (0-9 A-Z)
+  // Nouveau format Gist : ?g=GIST_ID#k=CLE_BASE36
+  const gistId = params.get('g');
+  const hashKey = location.hash.startsWith('#k=') ? location.hash.slice(3) : null;
+  if (gistId && hashKey) {
+    return { _gist: true, gistId, keyB36: hashKey };
+  }
+  // Format inline ?s= : KEY(16) + IV(12) + cipher en base36
   const s = params.get('s');
   if (s && /^[0-9A-Za-z]+$/.test(s)) {
     try {
@@ -4246,6 +4305,14 @@ function inviteFromUrl() {
 }
 async function resolveInvite(inv) {
   if (!inv) return null;
+  if (inv._gist) {
+    try {
+      const gistPayload = await readGist(inv.gistId);
+      const keyBytes = b36ToBytes(inv.keyB36.toUpperCase());
+      const ivCipher = b36ToBytes(gistPayload.toUpperCase());
+      return await decryptInviteToken(b62FromBytes(ivCipher), b62FromBytes(keyBytes));
+    } catch { return null; }
+  }
   if (inv._enc) return await decryptInviteToken(inv.token, inv.keyHex);
   return inv;
 }
@@ -4274,7 +4341,7 @@ function importInvite(p) {
   renderAll(); closeSheets(); pendingInvite = null; toast('Adresse importée ✓', 'success');
   // Nettoyer les params d'invitation de l'URL
   const cleanUrl = new URL(location.href);
-  cleanUrl.searchParams.delete('i'); cleanUrl.searchParams.delete('invite'); cleanUrl.searchParams.delete('k'); cleanUrl.searchParams.delete('s');
+  cleanUrl.searchParams.delete('i'); cleanUrl.searchParams.delete('invite'); cleanUrl.searchParams.delete('k'); cleanUrl.searchParams.delete('s'); cleanUrl.searchParams.delete('g');
   history.replaceState(null, '', cleanUrl.pathname + (cleanUrl.search === '?' ? '' : cleanUrl.search));
 }
 async function openImportByPaste() {
@@ -4283,7 +4350,18 @@ async function openImportByPaste() {
   try {
     let url;
     try { url = new URL(raw); } catch { url = new URL('https://x.com?' + raw.replace(/^[^?]*/, '')); }
-    // Nouveau format ?s= (base36 pour QR alphanumérique)
+    // Nouveau format Gist : ?g=GIST_ID#k=CLE_BASE36
+    const gistId = url.searchParams.get('g');
+    const hashKey = url.hash.startsWith('#k=') ? url.hash.slice(3) : null;
+    if (gistId && hashKey) {
+      toast('Chargement depuis Gist…');
+      const gistPayload = await readGist(gistId);
+      const keyBytes = b36ToBytes(hashKey.toUpperCase());
+      const ivCipher = b36ToBytes(gistPayload.toUpperCase());
+      const p = await decryptInviteToken(b62FromBytes(ivCipher), b62FromBytes(keyBytes));
+      if (p?.kind === 'doorkeys.invite') { pendingInvite = p; openInvitePreview(p); return; }
+    }
+    // Format inline ?s= (base36 pour QR alphanumérique)
     const sParam = url.searchParams.get('s');
     if (sParam && /^[0-9A-Za-z]+$/.test(sParam)) {
       const all = b36ToBytes(sParam.toUpperCase());
@@ -4695,12 +4773,21 @@ E.createInviteBtn.addEventListener('click', createAndCopyInvite);
 $('#createQrBtn')?.addEventListener('click', async () => {
   const a = byId(E.shareAddressSelect.value);
   if (!a) return toast('Choisis une adresse');
-  const { link } = await buildEncryptedInviteLink(a);
-  closeSheets();
-  setTimeout(() => openQrModal(link, a.name), 300);
+  const btn = $('#createQrBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader-2" style="animation:spin .8s linear infinite"></i> Génération…'; }
+  try {
+    const { link } = await buildEncryptedInviteLink(a);
+    closeSheets();
+    setTimeout(() => openQrModal(link, a.name), 300);
+  } catch(e) {
+    toast('Erreur lors de la création du QR');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="ti ti-qrcode" aria-hidden="true"></i> QR Code'; }
+  }
 });
 // ── SOCIAL SHARE HANDLERS ──
 async function buildShareText(a) {
+  toast('Création du lien…');
   const { link } = await buildEncryptedInviteLink(a);
   return { link, text: `DoorKeys : ${a.name}\n${link}` };
 }
